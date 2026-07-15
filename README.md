@@ -1,1 +1,226 @@
-# jannik1.github.com
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sleeper Draft – Restzeit</title>
+  <style>
+    :root{
+      color-scheme:dark;
+      --bg:#0b0f14;--panel:#151b24;--text:#f5f7fb;--muted:#9ca8b8;
+      --accent:#7c5cff;--good:#30d0a8;--border:#2a3442;--bad:#ff6b7a;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      background:radial-gradient(circle at top right,#241b55 0,transparent 32rem),var(--bg);
+      color:var(--text)
+    }
+    main{max-width:820px;margin:auto;padding:32px 18px 48px}
+    h1{margin:0;font-size:clamp(30px,6vw,48px)}
+    .sub{margin:8px 0 22px;color:var(--muted)}
+    .toolbar,.card{
+      background:rgba(21,27,36,.95);
+      border:1px solid var(--border);
+      border-radius:16px;
+      box-shadow:0 18px 50px rgba(0,0,0,.22)
+    }
+    .toolbar{display:grid;grid-template-columns:1fr auto;gap:10px;padding:12px;margin-bottom:14px}
+    input,button{
+      font:inherit;border-radius:10px;padding:11px 12px
+    }
+    input{background:#0f141c;color:var(--text);border:1px solid var(--border)}
+    button{background:var(--accent);color:#fff;border:0;font-weight:750;cursor:pointer}
+    button:disabled{opacity:.55}
+    #status{min-height:24px;color:var(--muted);margin:8px 2px 14px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .card{padding:20px}
+    .full{grid-column:1/-1}
+    .label{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+    .value{font-size:clamp(30px,7vw,48px);font-weight:850;margin-top:8px}
+    .small{font-size:14px;color:var(--muted);font-weight:600}
+    .progress{height:16px;background:#0d1219;border-radius:999px;overflow:hidden;border:1px solid var(--border);margin:16px 0 8px}
+    .progress div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--good));transition:width .35s}
+    .row{display:flex;justify-content:space-between;gap:12px}
+    .note{color:var(--muted);font-size:13px;line-height:1.5}
+    .good{color:var(--good)} .bad{color:var(--bad)}
+    @media(max-width:560px){
+      .grid{grid-template-columns:1fr}
+      .full{grid-column:1}
+      .toolbar{grid-template-columns:1fr}
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Draft-Restzeit</h1>
+  <p class="sub">Schätzung auf Basis des Tempos seit dem Draftstart am 14.07.2026 um 00:00 Uhr.</p>
+
+  <section class="toolbar">
+    <input id="draftId" value="1350231295224983552" aria-label="Draft-ID oder Sleeper-Link">
+    <button id="load">Aktualisieren</button>
+  </section>
+  <div id="status">Bereit.</div>
+
+  <section class="grid">
+    <article class="card full">
+      <div class="row">
+        <strong id="progressText">Noch keine Daten</strong>
+        <span id="percent" class="note">–</span>
+      </div>
+      <div class="progress"><div id="bar"></div></div>
+      <div id="updated" class="note"></div>
+    </article>
+
+    <article class="card">
+      <div class="label">Tempo seit Start</div>
+      <div class="value"><span id="pace">–</span> <span class="small">Min./Pick</span></div>
+    </article>
+
+    <article class="card">
+      <div class="label">Verbleibende Picks</div>
+      <div class="value" id="remaining">–</div>
+    </article>
+
+    <article class="card">
+      <div class="label">Geschätzte Restdauer</div>
+      <div class="value" id="duration">–</div>
+    </article>
+
+    <article class="card">
+      <div class="label">Voraussichtliches Ende</div>
+      <div class="value" id="eta">–</div>
+    </article>
+  </section>
+</main>
+
+<script>
+(() => {
+  const API = "https://api.sleeper.app/v1";
+  const DRAFT_START = new Date("2026-07-14T00:00:00+02:00");
+  const $ = id => document.getElementById(id);
+  let pickRefreshTimer;
+  let estimateTimer;
+  let state = null;
+
+  function extractId(value) {
+    const m = String(value).match(/(\d{10,})/);
+    return m ? m[1] : "";
+  }
+
+  function fmtDuration(mins) {
+    if (!Number.isFinite(mins)) return "–";
+    if (mins < 60) return Math.max(0, Math.round(mins)) + " Min.";
+    const hours = Math.floor(mins / 60);
+    const minutes = Math.round(mins % 60);
+    if (hours < 24) return `${hours} Std. ${minutes} Min.`;
+    const days = Math.floor(hours / 24);
+    return `${days} T. ${hours % 24} Std.`;
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, c => ({
+      "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+    }[c]));
+  }
+
+  function updateEstimate() {
+    if (!state) return;
+
+    const now = new Date();
+    const { total, picked, remaining, fetchedAt } = state;
+    const elapsedMinutes = Math.max(0, (now - DRAFT_START) / 60000);
+    const pace = picked > 0 ? elapsedMinutes / picked : NaN;
+    const restMinutes = remaining * pace;
+    const eta = Number.isFinite(restMinutes)
+      ? new Date(now.getTime() + restMinutes * 60000)
+      : null;
+
+    $("pace").textContent = Number.isFinite(pace) ? pace.toFixed(pace < 10 ? 1 : 0) : "–";
+    $("duration").textContent = fmtDuration(restMinutes);
+    $("eta").textContent = eta
+      ? eta.toLocaleString("de-DE", {
+          weekday:"short", day:"2-digit", month:"2-digit",
+          hour:"2-digit", minute:"2-digit", second:"2-digit"
+        })
+      : "–";
+
+    $("updated").textContent =
+      "Letzte Pick-Abfrage: " + fetchedAt.toLocaleString("de-DE") +
+      " · Schätzung aktualisiert: " + now.toLocaleTimeString("de-DE");
+  }
+
+  async function load() {
+    const id = extractId($("draftId").value);
+    if (!id) {
+      $("status").innerHTML = '<span class="bad">Ungültige Draft-ID.</span>';
+      return;
+    }
+
+    $("draftId").value = id;
+    $("load").disabled = true;
+    $("status").textContent = "Neue Picks werden geladen …";
+
+    try {
+      const [draftRes, picksRes] = await Promise.all([
+        fetch(`${API}/draft/${id}`, {cache:"no-store"}),
+        fetch(`${API}/draft/${id}/picks`, {cache:"no-store"})
+      ]);
+
+      if (!draftRes.ok || !picksRes.ok) {
+        throw new Error(`Sleeper-API nicht erreichbar (${draftRes.status}/${picksRes.status}).`);
+      }
+
+      const draft = await draftRes.json();
+      const picks = await picksRes.json();
+
+      const rounds = Number(draft.settings?.rounds || 0);
+      const teams = Number(
+        draft.settings?.teams ||
+        Object.keys(draft.draft_order || {}).length ||
+        0
+      );
+      const total = rounds && teams
+        ? rounds * teams
+        : Math.max(...picks.map(p => Number(p.pick_no) || 0), 0);
+      const picked = Array.isArray(picks) ? picks.length : 0;
+      const remaining = Math.max(total - picked, 0);
+      const pct = total > 0 ? Math.min(100, picked / total * 100) : 0;
+
+      state = {
+        total,
+        picked,
+        remaining,
+        fetchedAt: new Date()
+      };
+
+      $("progressText").textContent = total
+        ? `${picked} von ${total} Picks abgeschlossen`
+        : `${picked} Picks abgeschlossen`;
+      $("percent").textContent = total ? `${pct.toFixed(1)} %` : "–";
+      $("bar").style.width = `${pct}%`;
+      $("remaining").textContent = total ? remaining : "–";
+
+      updateEstimate();
+      $("status").innerHTML =
+        '<span class="good">Picks aktualisiert.</span> Nächste automatische Abfrage in 15 Minuten.';
+    } catch (err) {
+      $("status").innerHTML = `<span class="bad">Fehler:</span> ${escapeHtml(err.message)}`;
+    } finally {
+      $("load").disabled = false;
+    }
+  }
+
+  $("load").addEventListener("click", load);
+  $("draftId").addEventListener("keydown", event => {
+    if (event.key === "Enter") load();
+  });
+
+  load();
+  estimateTimer = setInterval(updateEstimate, 1000);
+  pickRefreshTimer = setInterval(load, 15 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
