@@ -45,6 +45,10 @@
     .row{display:flex;justify-content:space-between;gap:12px}
     .note{color:var(--muted);font-size:13px;line-height:1.5}
     .good{color:var(--good)} .bad{color:var(--bad)}
+    .leaderboard{width:100%;border-collapse:collapse;margin-top:10px}
+    .leaderboard th,.leaderboard td{padding:10px 6px;border-bottom:1px solid var(--border);text-align:left}
+    .leaderboard th{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+    .leaderboard td:last-child,.leaderboard th:last-child{text-align:right}
     @media(max-width:560px){
       .grid{grid-template-columns:1fr}
       .full{grid-column:1}
@@ -92,6 +96,17 @@
       <div class="label">Voraussichtliches Ende</div>
       <div class="value" id="eta">–</div>
     </article>
+
+    <article class="card full">
+      <div class="label">Sünderrangliste</div>
+      <div class="note">Picks mit mehr als 12 Stunden Abstand zum vorherigen Pick</div>
+      <table class="leaderboard">
+        <thead><tr><th>Manager</th><th>Anzahl</th></tr></thead>
+        <tbody id="sinners">
+          <tr><td colspan="2" class="note">Noch keine Daten.</td></tr>
+        </tbody>
+      </table>
+    </article>
   </section>
 </main>
 
@@ -123,6 +138,45 @@
     return String(value).replace(/[&<>"']/g, c => ({
       "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
     }[c]));
+  }
+
+  function pickTimestamp(pick) {
+    const raw = pick.picked_at ?? pick.metadata?.picked_at ?? pick.created_at;
+    if (!raw) return NaN;
+    const value = Number(raw);
+    return value < 1e12 ? value * 1000 : value;
+  }
+
+  function managerName(pick, usersById, rostersById) {
+    const roster = rostersById[String(pick.roster_id)] || null;
+    const userId = pick.picked_by || roster?.owner_id;
+    const user = usersById[String(userId)] || null;
+    return user?.display_name || user?.username || String(userId || "Unbekannt");
+  }
+
+  function renderSinners(picks, usersById, rostersById) {
+    const timed = [...picks]
+      .map(p => ({...p, _time: pickTimestamp(p)}))
+      .filter(p => Number.isFinite(p._time))
+      .sort((a, b) => a._time - b._time);
+
+    const counts = new Map();
+    for (let i = 1; i < timed.length; i++) {
+      const gapHours = (timed[i]._time - timed[i - 1]._time) / 3600000;
+      if (gapHours > 12) {
+        const name = managerName(timed[i], usersById, rostersById);
+        counts.set(name, (counts.get(name) || 0) + 1);
+      }
+    }
+
+    const ranking = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "de"));
+
+    $("sinners").innerHTML = ranking.length
+      ? ranking.map(([name, count], index) =>
+          `<tr><td>${index + 1}. ${escapeHtml(name)}</td><td>${count}</td></tr>`
+        ).join("")
+      : '<tr><td colspan="2" class="note">Bisher keine Picks über 12 Stunden.</td></tr>';
   }
 
   function updateEstimate() {
@@ -175,6 +229,23 @@
       const draft = await draftRes.json();
       const picks = await picksRes.json();
 
+      let usersById = {};
+      let rostersById = {};
+      if (draft.league_id) {
+        const [usersRes, rostersRes] = await Promise.all([
+          fetch(`${API}/league/${draft.league_id}/users`, {cache:"no-store"}),
+          fetch(`${API}/league/${draft.league_id}/rosters`, {cache:"no-store"})
+        ]);
+        if (usersRes.ok) {
+          const users = await usersRes.json();
+          usersById = Object.fromEntries(users.map(user => [String(user.user_id), user]));
+        }
+        if (rostersRes.ok) {
+          const rosters = await rostersRes.json();
+          rostersById = Object.fromEntries(rosters.map(roster => [String(roster.roster_id), roster]));
+        }
+      }
+
       const rounds = Number(draft.settings?.rounds || 0);
       const teams = Number(
         draft.settings?.teams ||
@@ -201,6 +272,7 @@
       $("percent").textContent = total ? `${pct.toFixed(1)} %` : "–";
       $("bar").style.width = `${pct}%`;
       $("remaining").textContent = total ? remaining : "–";
+      renderSinners(Array.isArray(picks) ? picks : [], usersById, rostersById);
 
       updateEstimate();
       $("status").innerHTML =
